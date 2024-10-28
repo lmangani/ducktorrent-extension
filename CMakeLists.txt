@@ -1,30 +1,72 @@
 cmake_minimum_required(VERSION 3.5)
 
-# Set extension name here
-set(TARGET_NAME quack)
+# Project name
+project(ducktorrent)
 
-# DuckDB's extension distribution supports vcpkg. As such, dependencies can be added in ./vcpkg.json and then
-# used in cmake with find_package. Feel free to remove or replace with other dependencies.
-# Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
+# Set C++ standard
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Define library sources and headers for udp-discovery
+set(LIB_SOURCES
+    udp-discovery-cpp/udp_discovery_ip_port.cpp
+    udp-discovery-cpp/udp_discovery_peer.cpp
+    udp-discovery-cpp/udp_discovery_protocol.cpp)
+
+set(LIB_HEADERS
+    udp-discovery-cpp/udp_discovery_ip_port.hpp
+    udp-discovery-cpp/udp_discovery_peer.hpp
+    udp-discovery-cpp/udp_discovery_peer_parameters.hpp
+    udp-discovery-cpp/udp_discovery_protocol.hpp
+    udp-discovery-cpp/udp_discovery_protocol_version.hpp)
+
+# Create the udp-discovery library
+add_library(udp-discovery STATIC ${LIB_SOURCES} ${LIB_HEADERS})
+set_property(TARGET udp-discovery PROPERTY CXX_STANDARD 98)
+
+# Include directories for the project
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/udp-discovery-cpp
+    ${DUCKDB_INCLUDE_DIRS}  # Make sure this is set in your build environment
+)
+
+# Find OpenSSL package
 find_package(OpenSSL REQUIRED)
 
-set(EXTENSION_NAME ${TARGET_NAME}_extension)
-set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
+# Set the extension name
+set(EXTENSION_NAME ducktorrent_extension)
 
-project(${TARGET_NAME})
-include_directories(src/include)
+# Set sources for the extension
+set(EXTENSION_SOURCES 
+    src/ducktorrent_extension.cpp
+    ${LIB_SOURCES}
+)
 
-set(EXTENSION_SOURCES src/quack_extension.cpp)
+# Build the extension
+add_library(${EXTENSION_NAME} SHARED ${EXTENSION_SOURCES})
 
-build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
-build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
+# Set compile definitions
+target_compile_definitions(${EXTENSION_NAME} PRIVATE 
+    DUCKDB_BUILD_LIBRARY
+    DUCKDB_EXTENSION_LIBRARY
+)
 
-# Link OpenSSL in both the static library as the loadable extension
-target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
+# Link dependencies
+target_link_libraries(${EXTENSION_NAME} 
+    PRIVATE
+        OpenSSL::SSL 
+        OpenSSL::Crypto 
+        udp-discovery
+)
 
-install(
-  TARGETS ${EXTENSION_NAME}
-  EXPORT "${DUCKDB_EXPORT_SET}"
-  LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
-  ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
+# Install the extension
+install(TARGETS ${EXTENSION_NAME} udp-discovery
+    EXPORT DuckDBExports
+    LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
+    ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
+
+# Install export set
+install(EXPORT DuckDBExports
+    FILE DuckDBTargets.cmake
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/cmake)
