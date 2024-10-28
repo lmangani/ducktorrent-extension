@@ -5,7 +5,7 @@
 Basic node discovery experiment. Do not use. 
 
 ### NODE A
-```
+```sql
 D SELECT announce_presence('test12345');
 ┌────────────────────────────────┐
 │ announce_presence('test12345') │
@@ -24,7 +24,7 @@ D SELECT find_peers('test12345');
 ```
 
 ### Node B
-```
+```sql
 D SELECT announce_presence('test12345');
 ┌────────────────────────────────┐
 │ announce_presence('test12345') │
