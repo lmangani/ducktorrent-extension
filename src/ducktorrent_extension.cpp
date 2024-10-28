@@ -21,47 +21,84 @@ using namespace duckdb;
 // Global peer object
 udpdiscovery::Peer peer; 
 
+// Structure to hold peer information
+struct PeerInfo {
+    std::string ip;
+    int port;
+    std::string user_data;
+};
+
+// Function to format peer info into a string
+std::string FormatPeerInfo(const PeerInfo& peer) {
+    std::stringstream ss;
+    ss << "{\"ip\":\"" << peer.ip << "\",\"port\":" << peer.port 
+       << ",\"user_data\":\"" << peer.user_data << "\"}";
+    return ss.str();
+}
+
 // Function to announce presence
 void AnnouncePresenceFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-    // Assuming input is a single VARCHAR column
     auto &input_column = input.data[0];
-    auto input_value = input_column.GetValue(0); // Get first value
+    auto input_value = input_column.GetValue(0);
 
-    // Create parameters for the peer
     udpdiscovery::PeerParameters parameters;
-    parameters.set_port(12021); // Use the designated port
-    parameters.set_application_id(7681412); // Set your application ID
+    parameters.set_port(12021);
+    parameters.set_application_id(7681411);
     parameters.set_can_discover(true);
     parameters.set_can_be_discovered(true);
+    
+    // Enable both broadcast and multicast
+    parameters.set_can_use_broadcast(true);
+    parameters.set_can_use_multicast(true);
+    parameters.set_multicast_group_address((224 << 24) + (0 << 16) + (0 << 8) + 123); // 224.0.0.123
 
-    // Start the discovery peer with input data
-    peer.Start(parameters, input_value.ToString().c_str());
-
-    // Set the result to be the same as the input
-    // result.SetValue(0, input_value);
-    result.SetValue(0, "Announced to local");
+    try {
+        if (!peer.Start(parameters, input_value.ToString().c_str())) {
+            throw std::runtime_error("Failed to start peer discovery");
+        }
+        result.SetValue(0, Value("Announced"));
+    } catch (std::exception& e) {
+        result.SetValue(0, Value("Error: " + std::string(e.what())));
+    }
 }
 
 // Function to find peers
 void FindPeersFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-    // Assuming input is a single VARCHAR column
     auto &input_column = input.data[0];
-    auto input_value = input_column.GetValue(0); // Get first value
+    auto input_value = input_column.GetValue(0);
 
-    // List discovered peers
-    auto new_discovered_peers = peer.ListDiscovered();
+    try {
+        // Get list of discovered peers
+        auto discovered_peers = peer.ListDiscovered();
 
-    // Construct a string of peer IPs
-    std::string peers;
-    for (const auto &discovered_peer : new_discovered_peers) {
-        if (!peers.empty()) {
-            peers += ", "; // Separate peers by comma
+        std::vector<PeerInfo> peer_list;
+        std::stringstream json_array;
+
+        json_array << "[";
+        bool first = true;
+        // Process each discovered peer
+        for (const auto &discovered_peer : discovered_peers) {
+            PeerInfo info;
+            info.ip = discovered_peer.ip_port().ip();
+            info.port = discovered_peer.ip_port().port();
+            info.user_data = discovered_peer.user_data();
+
+            if (!first) {
+                json_array << ",";
+            }
+            json_array << FormatPeerInfo(info);
+            first = false;
         }
-        peers += discovered_peer.ip_port().ip(); // Add the peer IP to the list
-    }
 
-    // Set the result to be the found peers
-    result.SetValue(0, peers.empty() ? "no peers" : peers);
+        json_array << "]";
+
+        // Set the result to be the JSON array of peers
+        std::string peers_json = json_array.str();
+        result.SetValue(0, Value(peers_json));
+
+    } catch (std::exception& e) {
+        result.SetValue(0, Value("Error: " + std::string(e.what())));
+    }
 }
 
 // LoadInternal remains unchanged
