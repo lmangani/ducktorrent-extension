@@ -31,6 +31,7 @@ jobs:
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64;osx_amd64;osx_arm64;'
 
   duckdb-stable-deploy:
+    if: false
     name: Deploy extension binaries
     needs: duckdb-stable-build
     uses: ./.github/workflows/_extension_deploy.yml
