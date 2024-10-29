@@ -79,7 +79,7 @@ void FindPeersFunction(DataChunk &input, ExpressionState &state, Vector &result)
         // Process each discovered peer
         for (const auto &discovered_peer : discovered_peers) {
             PeerInfo info;
-            info.ip = discovered_peer.ip_port().ip();
+            info.ip = udpdiscovery::IpToString(discovered_peer.ip_port().ip());
             info.port = discovered_peer.ip_port().port();
             info.user_data = discovered_peer.user_data();
 
