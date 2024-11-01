@@ -9,3 +9,6 @@
 [submodule "udp-discovery-cpp"]
 	path = udp-discovery-cpp
 	url = https://github.com/truvorskameikin/udp-discovery-cpp.git
+[submodule "libdht"]
+	path = libdht
+	url = https://github.com/naturalpolice/libdht
