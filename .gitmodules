@@ -9,3 +9,4 @@
 [submodule "libdht"]
 	path = libdht
 	url = https://github.com/lmangani/libdht
+	branch = master
