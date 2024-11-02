@@ -34,7 +34,7 @@ using namespace duckdb;
 constexpr int DEFAULT_DHT_PORT = 6881;
 constexpr size_t MAX_BOOTSTRAP_NODES = 20;
 constexpr size_t ID_SIZE = 20;
-constexpr int SEARCH_TIMEOUT_MS = 2000;  // 2 seconds timeout for peer search
+constexpr int SEARCH_TIMEOUT_MS = 5000;  // 2 seconds timeout for peer search
 
 // Bootstrap nodes - well-known DHT nodes
 struct BootstrapNode {
@@ -84,6 +84,19 @@ static time_t last_peer_received = 0;
 static void dht_callback(void *closure, int event, 
                         const unsigned char *info_hash,
                         const void *data, size_t data_len) {
+
+    if(event == DHT_EVENT_SEARCH_DONE)
+        printf("Search done.\n");
+    else if(event == DHT_EVENT_SEARCH_DONE6)
+        printf("IPv6 search done.\n");
+    else if(event == DHT_EVENT_VALUES)
+        printf("Received %d values.\n", (int)(data_len / 6));
+    else if(event == DHT_EVENT_VALUES6)
+        printf("Received %d IPv6 values.\n", (int)(data_len / 18));
+    else
+        printf("Unknown DHT event %d.\n", event);
+
+
     if (event == DHT_EVENT_VALUES || event == DHT_EVENT_VALUES6) {
         // Update last received timestamp
         time(&last_peer_received);
