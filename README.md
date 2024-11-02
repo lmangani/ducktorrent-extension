@@ -12,7 +12,7 @@ D SELECT dht_start();
 
 Announce presence using a hash `token`
 ```sql
-D SELECT announce_presence('test12345');
+D SELECT announce_presence('fa8f6d21eeb3948b8497439b4d540294c42653d1');
 ```
 
 Find peers from any node using the same hash `token`
