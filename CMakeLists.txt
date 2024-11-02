@@ -3,32 +3,18 @@ cmake_minimum_required(VERSION 3.5)
 # Project name
 project(ducktorrent)
 
-# Set C++ standard
-set(CMAKE_CXX_STANDARD 11)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Define library sources and headers for udp-discovery
-set(LIB_SOURCES
-    udp-discovery-cpp/udp_discovery_ip_port.cpp
-    udp-discovery-cpp/udp_discovery_peer.cpp
-    udp-discovery-cpp/udp_discovery_protocol.cpp)
-
-set(LIB_HEADERS
-    udp-discovery-cpp/udp_discovery_ip_port.hpp
-    udp-discovery-cpp/udp_discovery_peer.hpp
-    udp-discovery-cpp/udp_discovery_peer_parameters.hpp
-    udp-discovery-cpp/udp_discovery_protocol.hpp
-    udp-discovery-cpp/udp_discovery_protocol_version.hpp)
-
-# Create the udp-discovery library
-add_library(udp-discovery STATIC ${LIB_SOURCES} ${LIB_HEADERS})
-set_property(TARGET udp-discovery PROPERTY CXX_STANDARD 98)
+set(CLIB dht)
+file(GLOB CLIB_S "${CLIB}/*.c")
+file(GLOB CLIB_H "${CLIB}/*.h")
+add_library(${CLIB} STATIC ${CLIB_S} ${CLIB_H})
+target_compile_options(${CLIB} PRIVATE -DCLIB)
+target_link_libraries(${CLIB})
 
 # Include directories for the project
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/udp-discovery-cpp
-    ${DUCKDB_INCLUDE_DIRS}  # Make sure this is set in your build environment
+    ${CMAKE_CURRENT_SOURCE_DIR}/dht
+    ${DUCKDB_INCLUDE_DIRS}
 )
 
 # Find OpenSSL package
@@ -38,7 +24,7 @@ find_package(OpenSSL REQUIRED)
 set(EXTENSION_NAME ducktorrent_extension)
 
 # Set sources for the extension
-set(EXTENSION_SOURCES 
+set(EXTENSION_SOURCES
     src/ducktorrent_extension.cpp
     ${LIB_SOURCES}
 )
@@ -47,21 +33,22 @@ set(EXTENSION_SOURCES
 add_library(${EXTENSION_NAME} SHARED ${EXTENSION_SOURCES})
 
 # Set compile definitions
-target_compile_definitions(${EXTENSION_NAME} PRIVATE 
+target_compile_definitions(${EXTENSION_NAME} PRIVATE
     DUCKDB_BUILD_LIBRARY
     DUCKDB_EXTENSION_LIBRARY
 )
 
 # Link dependencies
-target_link_libraries(${EXTENSION_NAME} 
+target_link_libraries(${EXTENSION_NAME}
     PRIVATE
-        OpenSSL::SSL 
-        OpenSSL::Crypto 
-        udp-discovery
+        OpenSSL::SSL
+        OpenSSL::Crypto
+	${CLIB}
+	libcrypt.so
 )
 
 # Install the extension
-install(TARGETS ${EXTENSION_NAME} udp-discovery
+install(TARGETS ${EXTENSION_NAME}
     EXPORT DuckDBExports
     LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
     ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
