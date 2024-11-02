@@ -11,130 +11,248 @@
 // OpenSSL linked through vcpkg
 #include <openssl/opensslv.h>
 
-#include "udp_discovery_peer.hpp"
-#include "udp_discovery_peer_parameters.hpp"
-#include "udp_discovery_ip_port.hpp"
-#include "udp_discovery_protocol.hpp"
+// System includes
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/time.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netdb.h>
+
+// DHT includes
+extern "C" {
+#include "dht.h"
+}
 
 using namespace duckdb;
 
-// Global peer object
-udpdiscovery::Peer peer; 
+// Constants
+constexpr int DEFAULT_DHT_PORT = 6881;
+constexpr size_t MAX_BOOTSTRAP_NODES = 20;
+constexpr size_t ID_SIZE = 20;
 
-// Structure to hold peer information
-struct PeerInfo {
-    std::string ip;
-    int port;
-    std::string user_data;
-};
+// Global state
+static int dht_socket = -1;
+static unsigned char node_id[ID_SIZE];
+static bool dht_initialized = false;
 
-// Function to format peer info into a string
-std::string FormatPeerInfo(const PeerInfo& peer) {
-    std::stringstream ss;
-    ss << "{\"ip\":\"" << peer.ip << "\",\"port\":" << peer.port 
-       << ",\"user_data\": " << peer.user_data << " }";
-    return ss.str();
+// Callback for DHT events
+static void dht_callback(void *closure, int event, 
+                        const unsigned char *info_hash,
+                        const void *data, size_t data_len) {
+    switch(event) {
+        case DHT_EVENT_VALUES:
+        case DHT_EVENT_VALUES6:
+            // Store values for retrieval by find_peers
+            break;
+        case DHT_EVENT_SEARCH_DONE:
+        case DHT_EVENT_SEARCH_DONE6:
+            break;
+    }
 }
 
-// Function to announce presence
+// Helper function to set socket non-blocking
+static int set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return -1;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+// Initialize node ID
+static void init_node_id() {
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        read(fd, node_id, ID_SIZE);
+        close(fd);
+    } else {
+        // Fallback to using time-based random
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        for (size_t i = 0; i < ID_SIZE; i++) {
+            node_id[i] = (tv.tv_usec >> (i % 4)) & 0xFF;
+        }
+    }
+}
+
+// DuckDB functions
+void DhtStartFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+    try {
+        if (dht_initialized) {
+            throw std::runtime_error("DHT Node already running");
+        }
+
+        // Create socket
+        dht_socket = socket(PF_INET, SOCK_DGRAM, 0);
+        if (dht_socket < 0) {
+            throw std::runtime_error("Failed to create socket: " + std::string(strerror(errno)));
+        }
+
+        // Set non-blocking
+        if (set_nonblocking(dht_socket) < 0) {
+            close(dht_socket);
+            throw std::runtime_error("Failed to set non-blocking: " + std::string(strerror(errno)));
+        }
+
+        // Bind socket
+        struct sockaddr_in sin;
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(DEFAULT_DHT_PORT);
+        sin.sin_addr.s_addr = INADDR_ANY;
+
+        if (bind(dht_socket, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
+            close(dht_socket);
+            throw std::runtime_error("Failed to bind socket: " + std::string(strerror(errno)));
+        }
+
+        // Initialize node ID and DHT
+        init_node_id();
+        if (dht_init(dht_socket, -1, node_id, (unsigned char*)"DC\0\0") < 0) {
+            close(dht_socket);
+            throw std::runtime_error("Failed to initialize DHT");
+        }
+
+        dht_initialized = true;
+        result.SetValue(0, Value("DHT Node Started Successfully"));
+    } catch (const std::exception& e) {
+        if (dht_socket >= 0) {
+            close(dht_socket);
+            dht_socket = -1;
+        }
+        result.SetValue(0, Value("Error: " + std::string(e.what())));
+    }
+}
+
+void DhtStopFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+    try {
+        if (!dht_initialized) {
+            result.SetValue(0, Value("DHT Node Not Running"));
+            return;
+        }
+
+        dht_uninit();
+        close(dht_socket);
+        dht_socket = -1;
+        dht_initialized = false;
+
+        result.SetValue(0, Value("DHT Node Stopped Successfully"));
+    } catch (const std::exception& e) {
+        result.SetValue(0, Value("Error: " + std::string(e.what())));
+    }
+}
+
 void AnnouncePresenceFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+    if (!dht_initialized) {
+        result.SetValue(0, Value("Error: DHT node not started"));
+        return;
+    }
+
     auto &input_column = input.data[0];
     auto input_value = input_column.GetValue(0);
 
-    udpdiscovery::PeerParameters parameters;
-    parameters.set_can_discover(true);
-    parameters.set_can_be_discovered(true);
-    
-    // Enable both broadcast and multicast
-    parameters.set_can_use_broadcast(true);
-    parameters.set_can_use_multicast(true);
-    parameters.set_multicast_group_address((224 << 24) + (0 << 16) + (0 << 8) + 123); // 224.0.0.123
-
-    parameters.set_port(12021);
-    parameters.set_application_id(7681411);
-
-    std::stringstream payload;
-    payload << "{\"socket\":\"localhost\",\"user_data\":\"" << input_value.ToString() << "\"}";
-
+    if (input_value.IsNull()) {
+        result.SetValue(0, Value("Error: input is null"));
+        return;
+    }
 
     try {
-        if (!peer.Start(parameters, payload.str() )) {
-            throw std::runtime_error("Failed to start peer discovery");
+        std::string hex_hash = input_value.ToString();
+        unsigned char info_hash[20];
+        // Convert hex string to binary
+        for (int i = 0; i < 20; i++) {
+            int value;
+            sscanf(hex_hash.c_str() + i * 2, "%02x", &value);
+            info_hash[i] = value;
         }
-        result.SetValue(0, Value("Announced Peer" ));
-    } catch (std::exception& e) {
-        result.SetValue(0, Value("Error: " + std::string(e.what())));
+
+        // Announce on random port
+        int port = 1024 + (rand() % (65535 - 1024));
+        if (dht_search(info_hash, port, AF_INET, dht_callback, nullptr) < 0) {
+            throw std::runtime_error("Failed to announce presence");
+        }
+
+        result.SetValue(0, Value("Successfully announced peer with port " + std::to_string(port)));
+    } catch (const std::exception& e) {
+        result.SetValue(0, Value("Error during announce: " + std::string(e.what())));
     }
 }
 
-// Function to find peers
 void FindPeersFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+    if (!dht_initialized) {
+        result.SetValue(0, Value("Error: DHT node not started"));
+        return;
+    }
+
     auto &input_column = input.data[0];
     auto input_value = input_column.GetValue(0);
 
+    if (input_value.IsNull()) {
+        result.SetValue(0, Value("Error: input is null"));
+        return;
+    }
+
     try {
-        // Get list of discovered peers
-        auto discovered_peers = peer.ListDiscovered();
-
-        std::vector<PeerInfo> peer_list;
-        std::stringstream json_array;
-
-        json_array << "[";
-        bool first = true;
-
-        // Process each discovered peer
-        for (const auto &discovered_peer : discovered_peers) {
-            PeerInfo info;
-            info.ip = udpdiscovery::IpToString(discovered_peer.ip_port().ip());
-            info.port = discovered_peer.ip_port().port();
-            info.user_data = discovered_peer.user_data();
-
-            if (!first) {
-                json_array << ",";
-            }
-            json_array << FormatPeerInfo(info);
-            first = false;
+        std::string hex_hash = input_value.ToString();
+        unsigned char info_hash[20];
+        for (int i = 0; i < 20; i++) {
+            int value;
+            sscanf(hex_hash.c_str() + i * 2, "%02x", &value);
+            info_hash[i] = value;
         }
 
-        json_array << "]";
+        if (dht_search(info_hash, 0, AF_INET, dht_callback, nullptr) < 0) {
+            throw std::runtime_error("Failed to search for peers");
+        }
 
-        // Set the result to be the JSON array of peers
-        std::string peers_json = json_array.str();
-        result.SetValue(0, Value(peers_json));
+        // Get current peers
+        struct sockaddr_in sins[100];
+        struct sockaddr_in6 sin6s[100];
+        int num = 100, num6 = 100;
+        int total = dht_get_nodes(sins, &num, sin6s, &num6);
 
-    } catch (std::exception& e) {
-        result.SetValue(0, Value("Error: " + std::string(e.what())));
+        // Format response as JSON
+        std::stringstream json;
+        json << "{\"info_hash\":\"" << hex_hash << "\",\"peers\":[";
+        for (int i = 0; i < num; i++) {
+            if (i > 0) json << ",";
+            char addr[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &sins[i].sin_addr, addr, sizeof(addr));
+            json << "{\"ip\":\"" << addr << "\",\"port\":" << ntohs(sins[i].sin_port) << "}";
+        }
+        json << "]}";
+
+        result.SetValue(0, Value(json.str()));
+    } catch (const std::exception& e) {
+        result.SetValue(0, Value("Error during peer search: " + std::string(e.what())));
     }
 }
-
-// LoadInternal remains unchanged
-static void LoadInternal(DatabaseInstance &instance) {
-    auto announce_presence_function = ScalarFunction("announce_presence", {LogicalType::VARCHAR},
-                                                    LogicalType::VARCHAR, AnnouncePresenceFunction);
-    ExtensionUtil::RegisterFunction(instance, announce_presence_function);
-
-    auto find_peers_function = ScalarFunction("find_peers", {LogicalType::VARCHAR},
-                                              LogicalType::VARCHAR, FindPeersFunction);
-    ExtensionUtil::RegisterFunction(instance, find_peers_function);
-}
-
 
 void DucktorrentExtension::Load(DuckDB &db) {
-	LoadInternal(*db.instance);
+    // Register functions
+    auto dht_start = ScalarFunction("dht_start", {}, LogicalType::VARCHAR, DhtStartFunction);
+    auto dht_stop = ScalarFunction("dht_stop", {}, LogicalType::VARCHAR, DhtStopFunction);
+    auto announce = ScalarFunction("announce_presence", {LogicalType::VARCHAR}, LogicalType::VARCHAR, AnnouncePresenceFunction);
+    auto find_peers = ScalarFunction("find_peers", {LogicalType::VARCHAR}, LogicalType::VARCHAR, FindPeersFunction);
+
+    ExtensionUtil::RegisterFunction(*db.instance, dht_start);
+    ExtensionUtil::RegisterFunction(*db.instance, dht_stop);
+    ExtensionUtil::RegisterFunction(*db.instance, announce);
+    ExtensionUtil::RegisterFunction(*db.instance, find_peers);
 }
+
 std::string DucktorrentExtension::Name() {
-	return "quack";
+    return "ducktorrent";
 }
 
 std::string DucktorrentExtension::Version() const {
 #ifdef EXT_VERSION_DUCKTORRENT
 	return EXT_VERSION_DUCKTORRENT;
 #else
-	return "";
+	return "v1.1.1";
 #endif
 }
 
-// Extension entry point
-extern "C" void Load(duckdb::DatabaseInstance &instance) {
-    LoadInternal(instance);
-}
