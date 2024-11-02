@@ -2,29 +2,22 @@
 
 > Nothing to see here, move on
 
-Experimental extension for Local network UDP discovery. Do not use. 
+Experimental extension for DHT node discovery. Do not use. 
 
 ### Example
-Announce presence from multiple instances using the same `token`
+Start the local DHT node
 ```sql
-D SELECT announce_presence('test12345');
-┌────────────────────────────────┐
-│ announce_presence('test12345') │
-│            varchar             │
-├────────────────────────────────┤
-│ Announced                      │
-└────────────────────────────────┘
+D SELECT dht_start();
 ```
 
-Find peers from any node using the same `token` to receive peers + metadata
+Announce presence using a hash `token`
+```sql
+D SELECT announce_presence('test12345');
+```
+
+Find peers from any node using the same hash `token`
 
 ```sql
-D SELECT find_peers('test12345');
-┌───────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                         find_peers('test12345')                                   │
-│                                               varchar                                             │
-├───────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ [{"ip":"xxx.xxx.xxx.xx","port":44802,"user_data": {"custom":"anything","user_data":"test12345"} } │
-└───────────────────────────────────────────────────────────────────────────────────────────────────┘
+D SELECT find_peers('fa8f6d21eeb3948b8497439b4d540294c42653d1');
 ```
 
