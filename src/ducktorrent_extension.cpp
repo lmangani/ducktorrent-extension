@@ -169,8 +169,15 @@ static void process_dht_events(struct dht_node *node, get_peers_priv *priv, int 
     }
 }
 
-// The rest of your functions (DhtStartFunction, DhtStopFunction, etc.) remain the same
-// but should be updated to use the new error handling and constants
+// WIP DHT Bootstrapping
+static int bootstrap_status = 0;
+
+// Add callback function
+static void bootstrap_status_cb(int complete, void *data) {
+    int *status = (int *)data;
+    *status = complete;
+    fprintf(stderr, "DHT bootstrap status: %s\n", complete ? "complete" : "in progress");
+}
 
 void DhtStartFunction(DataChunk &input, ExpressionState &state, Vector &result) {
     try {
@@ -178,9 +185,18 @@ void DhtStartFunction(DataChunk &input, ExpressionState &state, Vector &result) 
             throw DHTError("DHT Node already running");
         }
 
-        global_socket = socket(AF_INET, SOCK_DGRAM, 0);
+        // First try IPv6 socket which can handle both IPv6 and IPv4
+        global_socket = socket(AF_INET6, SOCK_DGRAM, 0);
+        bool ipv6_socket = true;
+
+        // Fall back to IPv4 if IPv6 is not supported
         if (global_socket < 0) {
-            throw DHTError("Error creating socket: " + std::string(strerror(errno)));
+            global_socket = socket(AF_INET, SOCK_DGRAM, 0);
+            ipv6_socket = false;
+            
+            if (global_socket < 0) {
+                throw DHTError("Error creating socket: " + std::string(strerror(errno)));
+            }
         }
 
         // Make socket non-blocking
@@ -191,36 +207,92 @@ void DhtStartFunction(DataChunk &input, ExpressionState &state, Vector &result) 
             throw DHTError("Error setting non-blocking mode: " + std::string(strerror(errno)));
         }
 
-        struct sockaddr_in sin = {};
-        sin.sin_family = AF_INET;
-        sin.sin_addr.s_addr = INADDR_ANY;
-        sin.sin_port = htons(DEFAULT_DHT_PORT);
-
+        // Set socket options
         int reuse = 1;
         if (setsockopt(global_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
             close(global_socket);
             global_socket = -1;
-            throw DHTError("Error setting socket options: " + std::string(strerror(errno)));
+            throw DHTError("Error setting SO_REUSEADDR: " + std::string(strerror(errno)));
         }
 
-        if (bind(global_socket, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
-            close(global_socket);
-            global_socket = -1;
-            throw DHTError("Error binding socket: " + std::string(strerror(errno)));
+        // For IPv6 socket, ensure it can handle IPv4 connections (IPv6_V6ONLY = 0)
+        if (ipv6_socket) {
+            int v6only = 0;
+            if (setsockopt(global_socket, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) < 0) {
+                // If this fails, we'll still try to use the socket
+                fprintf(stderr, "Warning: Could not set IPV6_V6ONLY=0: %s\n", strerror(errno));
+            }
         }
 
+        // Bind socket
+        if (ipv6_socket) {
+            struct sockaddr_in6 sin6 = {};
+            sin6.sin6_family = AF_INET6;
+            sin6.sin6_addr = in6addr_any;
+            sin6.sin6_port = htons(DEFAULT_DHT_PORT);
+
+            if (bind(global_socket, (struct sockaddr *)&sin6, sizeof(sin6)) < 0) {
+                close(global_socket);
+                global_socket = -1;
+                throw DHTError("Error binding IPv6 socket: " + std::string(strerror(errno)));
+            }
+        } else {
+            struct sockaddr_in sin = {};
+            sin.sin_family = AF_INET;
+            sin.sin_addr.s_addr = INADDR_ANY;
+            sin.sin_port = htons(DEFAULT_DHT_PORT);
+
+            if (bind(global_socket, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+                close(global_socket);
+                global_socket = -1;
+                throw DHTError("Error binding IPv4 socket: " + std::string(strerror(errno)));
+            }
+        }
+
+        // Initialize DHT node
         if (dht_node_init(&dht_node, NULL, sock_send, &global_socket) < 0) {
             close(global_socket);
             global_socket = -1;
             throw DHTError("Error initializing DHT node");
         }
 
+        // Set bootstrap callback before starting node
+        bootstrap_status = 0;
+        dht_node_set_bootstrap_callback(&dht_node, bootstrap_status_cb, &bootstrap_status);
+        
         dht_node_start(&dht_node);
-        result.SetValue(0, Value("DHT Node Started Successfully"));
+
+        // Wait for bootstrap to complete with timeout
+        struct timeval start, now;
+        gettimeofday(&start, NULL);
+        
+        while (!bootstrap_status) {
+            gettimeofday(&now, NULL);
+            if (now.tv_sec - start.tv_sec > 10) { // 10 second timeout
+                fprintf(stderr, "DHT bootstrap timed out\n");
+                break;
+            }
+            
+            // Process DHT events while waiting
+            get_peers_priv priv = {};
+            process_dht_events(&dht_node, &priv, 1000); // Check every second
+        }
+
+        if (bootstrap_status) {
+            result.SetValue(0, Value("DHT Node Started and Bootstrapped Successfully"));
+        } else {
+            result.SetValue(0, Value("DHT Node Started but Bootstrap Incomplete"));
+        }
     } catch (const std::exception& e) {
+        // If we failed at any point, ensure socket is closed
+        if (global_socket != -1) {
+            close(global_socket);
+            global_socket = -1;
+        }
         result.SetValue(0, Value("Error: " + std::string(e.what())));
     }
 }
+
 
 // Function to stop the DHT node
 void DhtStopFunction(DataChunk &input, ExpressionState &state, Vector &result) {
