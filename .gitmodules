@@ -6,6 +6,7 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = main
-[submodule "udp-discovery-cpp"]
-	path = udp-discovery-cpp
-	url = https://github.com/truvorskameikin/udp-discovery-cpp.git
+[submodule "libdht"]
+	path = libdht
+	url = https://github.com/lmangani/libdht
+	branch = master
